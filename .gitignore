@@ -1,0 +1,15 @@
+*.DS_Store
+*/figures/*
+*/.env
+*.venv
+*/venv/*
+*.json
+*.temp
+cache/
+servers/
+*/.arkitekt_next/*
+*.pyc
+*ot2windy.egg-info
+*__pycache__*
+config.yaml
+.state/
