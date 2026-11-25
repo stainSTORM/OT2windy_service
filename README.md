@@ -11,12 +11,34 @@ with `uv` on any computer that can reach the OT-2.
 
 | Action | Arguments | What it does |
 |---|---|---|
-| `run_protocol` | `protocol` | Uploads, runs and waits; returns the run id. Fails if the run fails or is stopped |
+| `run_protocol` | `protocol` | Uploads, waits for the robot's analysis, runs and waits; returns the run id. Fails if the analysis or the run fails, or the run is stopped |
+| `run_protocol_source` | `source`, `name` | The same for a protocol pasted as text, run once |
+| `save_protocol` | `name`, `source` | Keeps a pasted protocol for `run_protocol` |
+| `export_protocol` | `protocol` | The protocol's text |
 | `get_robot_status` | | `idle`, `running`, `paused`, `finishing` or `failed` |
 | `set_lights` | `on` | Deck lights: a quick check that the OT-2 is reachable |
 
-`protocol` is a dropdown of the protocols in `config.yaml`. `run_protocol` holds an `ot2` lock, so
-runs do not overlap. Cancelling the task in Arkitekt stops the run on the robot.
+`protocol` is a dropdown of the protocols in `config.yaml` and those saved with `save_protocol`.
+`run_protocol`, `run_protocol_source` and `save_protocol` hold an `ot2` lock, so they do not
+overlap. Cancelling the task in Arkitekt stops the run on the robot.
+
+### Protocols from Arkitekt
+
+`source` is Opentrons Python (a file with `run(protocol)`) or a Protocol Designer `.json`, pasted
+into the text field. The app checks that it parses, uploads it and waits for the OT-2's own
+analysis, which simulates the whole protocol. If the analysis fails (unknown labware, a volume the
+pipette cannot take, …), the error is reported and nothing runs. Robot software without analyses
+runs the protocol unchecked, with a note in the task log.
+
+`save_protocol` writes `protocols/<name>.py` (or `.json`) next to `config.yaml`; on the Pi that is
+`/home/pi/arkitekt/opentrons/protocols/`, a bind mount, so saved protocols survive container
+updates. Saving under an existing name replaces the protocol and keeps the old file in
+`protocols/.history/`. A **new** name shows up in the `run_protocol` dropdown after a restart, which
+the app then does by itself (after the current run, if one is running). Names from `config.yaml`
+are not overwritten.
+
+YAML protocols are not supported: the OT-2 takes Python and Protocol Designer JSON.
+`OT2Driver/ot2_driver.py`'s `ProtoPiler` is a stub that compiles nothing.
 
 ## Configuration
 
@@ -33,8 +55,9 @@ protocols:                # name -> file
 ```
 
 A protocol file is looked up in `protocols/` next to `config.yaml` first, then among the ones
-shipped in [OT2Driver/protocols](OT2Driver/protocols). To add one on the Pi, put it in
-`/home/pi/arkitekt/opentrons/protocols/` and name it in `config.yaml`. Custom labware
+shipped in [OT2Driver/protocols](OT2Driver/protocols). Every other `.py` and `.json` file in
+`protocols/` is offered under its file name, as `save_protocol` stores them.
+`analysis_timeout` (default 300 s) bounds the wait for the robot's analysis. Custom labware
 (`OT2Driver/labware/`) must be installed on the OT-2 itself, with the Opentrons App.
 
 ## Running locally (uv)
@@ -45,7 +68,8 @@ uv run app.py                 # config.yaml next to app.py; OT2_CONFIG=... for a
 ```
 
 Open <http://localhost:8080/> to bind it (see below). Without a robot, start the stand-in for its
-HTTP API and set `ot2.ip: 127.0.0.1`. A run there finishes after `RUN_SECONDS` (default 5):
+HTTP API and set `ot2.ip: 127.0.0.1`. A run there finishes after `RUN_SECONDS` (default 5); its
+analysis fails for a protocol that contains `MOCK_ANALYSIS_FAIL`:
 
 ```bash
 uv run scripts/ot2_mock_rest.py
@@ -68,7 +92,7 @@ The page on port 8080 (on the Pi: `http://<pi>/opentrons/`):
 without TLS (e.g. a NAS); the session token then travels unencrypted. The page also edits
 `config.yaml`: **Save and restart** checks the YAML, writes it and restarts the app.
 
-`arkitekt_bind.py` is the same file in OT2windy and fairinogale. Keep the copies identical.
+`arkitekt_bind.py` is the same file in OT2windy_service and fairinogale. Keep the copies identical.
 
 ## Docker
 

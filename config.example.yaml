@@ -9,7 +9,8 @@ ot2:
   port: 31950
 
 # What run_protocol offers: name -> file. A file is looked up in protocols/ next to this file
-# first, then among the protocols shipped with the app (OT2Driver/protocols).
+# first, then among the protocols shipped with the app (OT2Driver/protocols). Every other .py and
+# .json file in protocols/ is offered too, under its file name: save_protocol puts them there.
 protocols:
   staining: ccIHC_cycle1_Pan-CK_testing.py
   staining_full: ccIHC_cycle1_Pan-CK.py
@@ -17,3 +18,4 @@ protocols:
   # washing: washing.py   # not written yet
 
 poll_interval: 1          # seconds between run status checks
+analysis_timeout: 300     # seconds to wait for the OT-2's analysis of an uploaded protocol

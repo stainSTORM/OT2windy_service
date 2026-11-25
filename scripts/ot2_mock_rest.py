@@ -3,9 +3,11 @@
 # Run:
 #   uv run scripts/ot2_mock_rest.py      (port 31950, like the robot; RUN_SECONDS=5)
 #
-# This simulates a minimal subset of the Opentrons HTTP API v2.
+# This simulates a minimal subset of the Opentrons HTTP API v2. Every upload is analysed: the
+# analysis is pending on the first look, then ok, or not-ok if the file contains
+# MOCK_ANALYSIS_FAIL.
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional, Dict, List
 import os
@@ -20,6 +22,7 @@ app = FastAPI(title="Opentrons-Sim")
 # In-memory store
 lights_state = {"on": True}
 protocols_db: Dict[str, dict] = {}
+analyses_db: Dict[str, dict] = {}
 runs_db: Dict[str, dict] = {}
 commands_db: Dict[str, List[dict]] = {}
 
@@ -89,20 +92,40 @@ def post_robot_lights(payload: LightsPayload):
     return {"on": lights_state["on"]}
 
 @app.post("/protocols")
-def post_protocols():
+async def post_protocols(request: Request):
     """
     Simulates uploading a protocol.
     Return a fake protocol ID and relevant metadata.
     """
+    body = await request.body()  # the multipart upload, read raw (no python-multipart needed)
     protocol_id = f"protocol_{uuid.uuid4().hex[:6]}"
+    analysis_id = f"analysis_{uuid.uuid4().hex[:6]}"
     protocols_db[protocol_id] = {
         "id": protocol_id,
         "createdAt": "2025-01-01T12:00:00",
         "files": [{"name": "protocol.py"}],
-        "analysisSummaries": [],
+        "analysisSummaries": [{"id": analysis_id, "status": "pending"}],
         "source": "file"
     }
+    fails = b"MOCK_ANALYSIS_FAIL" in body
+    analyses_db[protocol_id] = {
+        "id": analysis_id, "status": "pending", "looked": 0,
+        "result": "not-ok" if fails else "ok",
+        "errors": [{"errorType": "ProtocolEngineError", "detail": "MOCK_ANALYSIS_FAIL in the protocol"}]
+        if fails else [],
+    }
     return {"data": protocols_db[protocol_id]}
+
+@app.get("/protocols/{protocol_id}/analyses")
+def get_protocol_analyses(protocol_id: str):
+    if protocol_id not in protocols_db:
+        raise HTTPException(status_code=404, detail="Protocol not found")
+    a = analyses_db[protocol_id]
+    a["looked"] += 1
+    if a["looked"] == 1:  # pending on the first look, like the robot right after an upload
+        return {"data": [{"id": a["id"], "status": "pending"}]}
+    return {"data": [{"id": a["id"], "status": "completed", "result": a["result"],
+                      "errors": a["errors"]}]}
 
 @app.get("/protocols")
 def list_protocols():

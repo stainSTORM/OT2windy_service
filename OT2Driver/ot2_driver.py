@@ -159,19 +159,36 @@ class OT2_Driver:
         else:
             return config_path, None
 
-    def transfer(self, protocol_path: str) -> Tuple[str, str]:
+    def upload(self, protocol_path: str) -> str:
+        """Upload a protocol (.py, or Protocol Designer .json); returns its id. The robot then
+        analyses it (simulates it) in the background: see get_analysis."""
         url = f"{self.base_url}/protocols"
-        protocol_path = Path(protocol_path)
-        with protocol_path.open("rb") as f:
-            files = {"files": f}
-            resp = self._request("post", url, files=files, headers=self.headers, timeout=600)
+        with Path(protocol_path).open("rb") as f:
+            resp = self._request("post", url, files={"files": f}, headers=self.headers, timeout=600)
+        return resp.json()["data"]["id"]
 
-        protocol_id = resp.json()["data"]["id"]
+    def get_analysis(self, protocol_id: str) -> Optional[Dict]:
+        """The robot's latest analysis of a protocol: status "pending" or "completed", and once
+        completed result "ok" or "not-ok" with errors. None if the robot does not analyse."""
+        url = f"{self.base_url}/protocols/{protocol_id}/analyses"
+        try:
+            resp = self._request("get", url, headers=self.headers)
+        except requests.exceptions.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return None
+            raise
+        analyses = resp.json().get("data") or []
+        return analyses[-1] if analyses else None
+
+    def create_run(self, protocol_id: str) -> str:
         run_url = f"{self.base_url}/runs"
         run_json = {"data": {"protocolId": protocol_id}}
         run_resp = self._request("post", run_url, headers=self.headers, json=run_json)
-        run_id = run_resp.json()["data"]["id"]
-        return protocol_id, run_id
+        return run_resp.json()["data"]["id"]
+
+    def transfer(self, protocol_path: str) -> Tuple[str, str]:
+        protocol_id = self.upload(protocol_path)
+        return protocol_id, self.create_run(protocol_id)
 
     def execute(self, run_id: str) -> Dict[str, Dict[str, str]]:
         execute_url = f"{self.base_url}/runs/{run_id}/actions"
