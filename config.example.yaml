@@ -2,20 +2,23 @@
 # /home/pi/arkitekt/opentrons/config.yaml and the binding page (http://<pi>/opentrons/) edits it.
 # Saving there restarts the app.
 
-app: ot2windy             # Arkitekt app identifier; protocolapp declares this name
+app: ot2windy             # Arkitekt app identifier; the protocol app's OT-2 demand names it
 
 ot2:
   ip: 169.254.254.239     # the OT-2's address (USB/direct cable: link-local 169.254.x.x)
   port: 31950
 
 # What run_protocol offers: name -> file. A file is looked up in protocols/ next to this file
-# first, then among the protocols shipped with the app (OT2Driver/protocols). Every other .py and
-# .json file in protocols/ is offered too, under its file name: save_protocol puts them there.
+# first, then among the protocols shipped with the app (OT2Driver/protocols, a copy of
+# stainSTORM/OT2windy). Every other protocol in protocols/ is offered too, under its file name,
+# within seconds of being put there (save_protocol, or the Pi's file browser): no restart.
+# ccIHC is three files per cycle, run in turn with a stop between them to move the waste;
+# OT2Driver/protocols/make_ccihc_protocols.py writes them.
 protocols:
-  staining: ccIHC_cycle1_Pan-CK_testing.py
-  staining_full: ccIHC_cycle1_Pan-CK.py
+  ccihc_1pre: ccIHC_cycle1_Pan-CK_1pre.py
+  ccihc_2aec: ccIHC_cycle1_Pan-CK_2aec.py
+  ccihc_3hema: ccIHC_cycle1_Pan-CK_3hema.py
   dummy: dummy.py
-  # washing: washing.py   # not written yet
 
 poll_interval: 1          # seconds between run status checks
 analysis_timeout: 300     # seconds to wait for the OT-2's analysis of an uploaded protocol

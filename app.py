@@ -2,20 +2,26 @@
 
 Uploads a protocol to the OT-2 over its HTTP API (port 31950), lets the robot analyse it, runs it
 and waits until it has finished. config.yaml names the robot. run_protocol offers the protocols
-config.yaml names and those saved with save_protocol (protocols/ next to config.yaml, on the Pi a
-bind mount); run_protocol_source runs pasted Python or Protocol Designer JSON once.
+config.yaml names and those in protocols/ next to config.yaml (on the Pi a bind mount): a file
+dropped there, or saved with save_protocol, is offered within seconds, without a restart.
+run_protocol_source runs pasted Python or Protocol Designer JSON once.
+
+The live `run` state (protocols on offer, the one running, its step, runs so far) is what the
+stainSTORM protocol app (helsinki_fake_lab/protocolapp, OT2Like) demands.
 
 Run:  uv run app.py   then open http://localhost:8080/ to bind it.
 OT2_CONFIG picks another config.yaml (default: next to this file).
 Without a robot: uv run scripts/ot2_mock_rest.py, and set ot2.ip to 127.0.0.1.
 """
 
+import asyncio
 import json
 import os
 import re
 import shutil
 import tempfile
 import threading
+from dataclasses import field
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -23,9 +29,9 @@ from typing import Annotated
 import koil
 import yaml
 from arkitekt import App, Description, Effects, Task
-from arkitekt.widgets import ParagraphWidget, withChoices
+from arkitekt.widgets import ParagraphWidget, withStateChoices
 
-from arkitekt_bind import restart_soon, serve
+from arkitekt_bind import serve
 from OT2Driver.ot2_driver import OT2_Config, OT2_Driver, RunStatus
 
 HERE = Path(__file__).resolve().parent
@@ -38,24 +44,55 @@ cfg = yaml.safe_load(CONFIG.read_text())
 PROTOCOLS = cfg.get("protocols") or {}
 SAVED = CONFIG.parent / "protocols"  # extra protocols and those saved with save_protocol
 FINISHED = (RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.STOPPED)
+RESCAN_S = 5  # how often protocols/ is looked at for new files
 
 
 def protocol_names() -> list[str]:
-    """config.yaml's protocols, then the other .py and .json files in protocols/."""
+    """config.yaml's protocols, then the other protocols in protocols/: .json files, and .py
+    files with a run() (a helper such as make_ccihc_protocols.py is not one)."""
     names = list(PROTOCOLS)
     for path in sorted([*SAVED.glob("*.py"), *SAVED.glob("*.json")]):
-        if path.stem not in names and path.name not in PROTOCOLS.values():
-            names.append(path.stem)
+        if path.stem in names or path.name in PROTOCOLS.values():
+            continue
+        if path.suffix == ".py" and "def run(" not in path.read_text(errors="ignore"):
+            continue
+        names.append(path.stem)
     return names
 
 
-PROTOCOL_NAMES = protocol_names()
+# 2.0.0: the run state, and run_protocol returns nothing (the run id is in the task log).
+app = App(cfg.get("app", "ot2windy"), "2.0.0", effects=Effects.IRREVERSIBLE)
 
-app = App(cfg.get("app", "ot2windy"), "1.0.0", effects=Effects.IRREVERSIBLE)
 
-Protocol = Annotated[str, Description("Protocol from config.yaml or saved with save_protocol")]
-if PROTOCOL_NAMES:
-    Protocol = Annotated[Protocol, withChoices(*PROTOCOL_NAMES)]
+@app.state(name="run")  # the key the protocol app's `run:` demand asks for
+class RunState:
+    """Which protocols the OT-2 offers, and what it is running."""
+
+    available_protocols: list[str] = field(default_factory=list)
+    current_protocol: str = ""
+    #: what the robot reports while a protocol runs: uploading, analysing, running, ...
+    current_step: str = ""
+    runs_completed: int = 0
+
+
+@app.startup
+def initialize_run() -> RunState:
+    return RunState(available_protocols=protocol_names())
+
+
+@app.background
+async def watch_protocols(state: RunState) -> None:
+    """Offers a protocol dropped into protocols/ (e.g. with the Pi's file browser) without a
+    restart."""
+    while True:
+        await asyncio.sleep(RESCAN_S)
+        names = protocol_names()
+        if names != state.available_protocols:
+            state.available_protocols = names
+
+
+Protocol = Annotated[str, withStateChoices("self.run.available_protocols"),
+                     Description("A protocol from config.yaml or protocols/")]
 Source = Annotated[str, ParagraphWidget(), Description(
     "The protocol: Opentrons Python (with run(protocol)) or Protocol Designer JSON")]
 ProtocolName = Annotated[str, Description("Letters, digits, - and _; the robot shows it as the "
@@ -134,20 +171,27 @@ def analyse(ot2: OT2_Driver, protocol_id: str, task: Task) -> None:
                        f"(analysis_timeout in config.yaml). Nothing was run.")
 
 
-def run(path: Path, label: str, task: Task) -> str:
+def run(state: RunState, path: Path, label: str, task: Task) -> str:
     """Upload, analyse, run and wait; returns the run id. Cancelling stops the run."""
     with _running:
         ot2 = driver()
-        protocol_id = ot2.upload(str(path))
-        analyse(ot2, protocol_id, task)
-        run_id = ot2.create_run(protocol_id)
-        ot2.current_run_id = run_id
-        task.log(f"{label}: protocol {protocol_id}, run {run_id}")
-        ot2.execute(run_id)
-        return wait(ot2, label, run_id, task)
+        state.current_protocol, state.current_step = label, "uploading"
+        try:
+            protocol_id = ot2.upload(str(path))
+            state.current_step = "analysing"
+            analyse(ot2, protocol_id, task)
+            run_id = ot2.create_run(protocol_id)
+            ot2.current_run_id = run_id
+            task.log(f"{label}: protocol {protocol_id}, run {run_id}")
+            ot2.execute(run_id)
+            wait(state, ot2, label, run_id, task)
+            state.runs_completed += 1
+            return run_id
+        finally:
+            state.current_protocol = state.current_step = ""
 
 
-def wait(ot2: OT2_Driver, label: str, run_id: str, task: Task) -> str:
+def wait(state: RunState, ot2: OT2_Driver, label: str, run_id: str, task: Task) -> None:
     status = None
     try:
         while status not in FINISHED:
@@ -155,28 +199,29 @@ def wait(ot2: OT2_Driver, label: str, run_id: str, task: Task) -> str:
             new = ot2.check_run_status(run_id)
             if new != status:
                 task.log(f"Run {run_id}: {new.value}")
+                state.current_step = new.value
                 status = new
     except BaseException:
         ot2.cancel(run_id)  # cancelled (or the robot stopped answering): stop the run too
         raise
     if status != RunStatus.SUCCEEDED:
         raise RuntimeError(f"{label} ended {status.value} (run {run_id})")
-    return run_id
 
 
 @app.action(locks=["ot2"])
-def run_protocol(protocol: Protocol, *, task: Task) -> str:
+def run_protocol(state: RunState, protocol: Protocol, *, task: Task) -> None:
     """Run Protocol
 
     Uploads the protocol, waits for the OT-2's analysis of it, runs it and waits until the robot
-    has finished. Returns the run id. A protocol that fails the analysis is not run. Cancelling
-    the task stops the run on the robot.
+    has finished. A protocol that fails the analysis is not run. Cancelling the task stops the
+    run on the robot. The run id is in the task log.
     """
-    return run(protocol_file(protocol), protocol, task)
+    run(state, protocol_file(protocol), protocol, task)
 
 
 @app.action(locks=["ot2"])
-def run_protocol_source(source: Source, name: ProtocolName = "uploaded", *, task: Task) -> str:
+def run_protocol_source(state: RunState, source: Source, name: ProtocolName = "uploaded", *,
+                        task: Task) -> str:
     """Run Protocol Source
 
     Runs a protocol given as text, once, like run_protocol: uploads it, waits for the OT-2's
@@ -187,17 +232,16 @@ def run_protocol_source(source: Source, name: ProtocolName = "uploaded", *, task
     with tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / f"{check_name(name)}{suffix}"
         path.write_text(source)
-        return run(path, name, task)
+        return run(state, path, name, task)
 
 
 @app.action(locks=["ot2"], effects=Effects.REPEATABLE)
-def save_protocol(name: ProtocolName, source: Source) -> str:
+def save_protocol(state: RunState, name: ProtocolName, source: Source) -> str:
     """Save Protocol
 
     Keeps a protocol (Python or Protocol Designer JSON) in protocols/ next to config.yaml, where
     run_protocol finds it by name. Replaces a saved protocol of that name; the old file goes to
-    protocols/.history/. Does not touch the robot: run_protocol checks it there. A new name
-    appears in run_protocol once the app has restarted, which it then does by itself.
+    protocols/.history/. Does not touch the robot: run_protocol checks it there.
     """
     if check_name(name) in PROTOCOLS:
         raise ValueError(f"{name!r} is defined in config.yaml: edit it there, or pick another name")
@@ -213,11 +257,8 @@ def save_protocol(name: ProtocolName, source: Source) -> str:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(source)
     tmp.replace(path)
-    message = f"Saved {name!r} to {path}"
-    if protocol_names() != PROTOCOL_NAMES:
-        restart_soon(f"new protocol {name!r}")
-        message += "; the app restarts so that run_protocol offers it"
-    return message
+    state.available_protocols = protocol_names()
+    return f"Saved {name!r} to {path}"
 
 
 @app.action(effects=Effects.NONE)
