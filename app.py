@@ -61,7 +61,7 @@ def protocol_names() -> list[str]:
 
 
 # 2.0.0: the run state, and run_protocol returns nothing (the run id is in the task log).
-app = App(cfg.get("app", "ot2windy"), "2.0.0", effects=Effects.IRREVERSIBLE)
+app = App(cfg.get("app", "ot2"), "2.0.0", effects=Effects.IRREVERSIBLE)
 
 
 @app.state(name="run")  # the key the protocol app's `run:` demand asks for

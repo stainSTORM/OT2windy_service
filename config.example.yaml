@@ -2,7 +2,7 @@
 # /home/pi/arkitekt/opentrons/config.yaml and the binding page (http://<pi>/opentrons/) edits it.
 # Saving there restarts the app.
 
-app: ot2windy             # Arkitekt app identifier; the protocol app's OT-2 demand names it
+app: ot2                  # Arkitekt app identifier: the workflow's OT-2 demand and the simulated OT-2 use it
 
 ot2:
   ip: 169.254.254.239     # the OT-2's address (USB/direct cable: link-local 169.254.x.x)
