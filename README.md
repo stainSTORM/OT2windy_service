@@ -23,7 +23,8 @@ with `uv` on any computer that can reach the OT-2.
 `run_protocol`, `run_protocol_source` and `save_protocol` hold an `ot2` lock, so they do not
 overlap. Cancelling the task in Arkitekt stops the run on the robot.
 
-The live state `run` is what the workflow's OT-2 demand reads: `available_protocols`,
+It registers as `ot2` (`app:` in `config.yaml`), the name the workflow's OT-2 demand and the
+simulated OT-2 in helsinki_fake_lab share. The live state `run` is what that demand reads: `available_protocols`,
 `current_protocol`, `current_step` (what the robot reports: uploading, analysing, running, ...) and
 `runs_completed`.
 
